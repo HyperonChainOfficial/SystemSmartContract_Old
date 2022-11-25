@@ -411,10 +411,12 @@ contract Validators is Params {
 
         if (isCreate) {
             //for the first time, validator has to stake 0.5% of the totalsupply which is 500,000 coins
-            require(msg.value >= 500000 ether);
+            require(msg.value >= 500000 ether,"Insufficient Value");
             stake(validator);
             emit LogCreateValidator(validator, feeAddr, block.timestamp);
         } else {
+            //for edit transaction, no value is desired
+            require(msg.value == 0, "Value not needed");
             emit LogEditValidator(validator, feeAddr, block.timestamp);
         }
     }
