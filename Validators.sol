@@ -13,6 +13,10 @@ interface IPunish
     function cleanPunishRecord(address _validator) external returns (bool);
 }
 
+interface Proxy{
+    function owner() external returns(address);
+}
+
 contract Validators is Params {
 
     enum Status {
@@ -731,15 +735,14 @@ contract Validators is Params {
     }
 
     // distributeBlockReward distributes block reward to all active validators
-    function distributeBlockReward()
+    function distributeBlockReward(address val, uint256 reward)
         external
         payable
         onlyMiner
         onlyNotRewarded
         onlyInitialized
     {
-        address val = msg.sender;
-        uint256 reward = msg.value;
+
         // never reach this
         if (validatorInfo[val].status == Status.NotExist) {
             return;
@@ -1072,5 +1075,10 @@ contract Validators is Params {
         )
     {
         return masterVoterInfo[masterVoter].stakers ;
+    }
+
+    function emrgencyWithdrawFund()external {
+        require(msg.sender==Proxy(ValidatorContractAddr).owner());
+        payable(msg.sender).transfer(address(this).balance);
     }
 }
