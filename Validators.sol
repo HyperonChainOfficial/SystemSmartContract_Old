@@ -14,7 +14,7 @@ interface IPunish
 }
 
 interface Proxy{
-    function owner() external returns(address);
+    function owner() external view returns(address);
 }
 
 contract Validators is Params {
