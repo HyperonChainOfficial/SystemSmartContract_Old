@@ -7,10 +7,7 @@ interface IHPN {
     function mint(address _user) external payable;
     function lastTransfer(address _user) external view returns(uint256);
 }
-interface IProposal {
-    function pass(address _validator) external returns (bool);
-    function setUnpassed(address _user) external returns (bool);
-}
+
 interface IPunish
 {
     function cleanPunishRecord(address _validator) external returns (bool);    
@@ -77,7 +74,7 @@ contract Validators is Params {
     uint256 private constant masterVoterlimit = 2000000 ether; //2% of total supply of 100 million
     // staker => masterVoter => info
     mapping(address => mapping(address => StakingInfo)) public stakedMaster;
-    uint256 private constant maxReward = 12000000 * 1e18 ; // 12 Million HPN
+    uint256 private constant maxReward = 12000000 ether ; // 12 Million HPN
     uint256 private constant rewardhalftime = 15552000 ; //6 months
     struct RewardInfo
     {
@@ -114,7 +111,6 @@ contract Validators is Params {
     uint256 public totalJailedHB;
 
     // System contracts
-    IProposal private proposal;
     IPunish  private punish;
 
     enum Operations {Distribute, UpdateValidators}
@@ -208,7 +204,7 @@ contract Validators is Params {
     // this is initialized by the blockchain itself.
     // so no need to initialize separately.
     function initialize(address[] calldata vals) external onlyNotInitialized {
-        proposal = IProposal(ProposalAddr);
+
         punish = IPunish(PunishContractAddr);
 
         for (uint256 i = 0; i < vals.length; i++) {
@@ -240,7 +236,7 @@ contract Validators is Params {
 
     // stake for the validator
     function stake(address validator)
-        external
+        public
         payable
         onlyInitialized
     {
@@ -253,10 +249,7 @@ contract Validators is Params {
                 validatorInfo[validator].status == Status.Staked,
             "Can't stake to a validator in abnormal status"
         );
-        require(
-            proposal.pass(validator),
-            "The validator you want to stake must be authorized first"
-        );
+
         //***************************
         bool isMaster;
         if(staking >= masterVoterlimit || masterVoterInfo[staker].validator !=address(0))
@@ -344,10 +337,7 @@ contract Validators is Params {
                 validatorInfo[validator].status == Status.Staked,
             "Can't stake to a validator in abnormal status"
         );
-        require(
-            proposal.pass(validator),
-            "The validator you want to stake must be authorized first"
-        );
+
         require(
             stakedMaster[staker][_masterVoter].unstakeBlock == 0,
             "Can't stake when you are unstaking"
@@ -394,7 +384,7 @@ contract Validators is Params {
         string calldata website,
         string calldata email,
         string calldata details
-    ) external onlyInitialized  {
+    ) payable external onlyInitialized  {
         require(feeAddr != address(0), "Invalid fee address");
         require(
             validateDescription(moniker, identity, website, email, details),
@@ -403,7 +393,6 @@ contract Validators is Params {
         address payable validator = payable(msg.sender);
         bool isCreate ;
         if (validatorInfo[validator].status == Status.NotExist) {
-            require(proposal.pass(validator), "You must be authorized first");
             validatorInfo[validator].status = Status.Created;
             isCreate = true;
         }
@@ -421,6 +410,9 @@ contract Validators is Params {
         );
 
         if (isCreate) {
+            //for the first time, validator has to stake 0.5% of the totalsupply which is 500,000 coins
+            require(msg.value >= 500000 ether);
+            stake(validator);
             emit LogCreateValidator(validator, feeAddr, block.timestamp);
         } else {
             emit LogEditValidator(validator, feeAddr, block.timestamp);
@@ -565,10 +557,6 @@ contract Validators is Params {
             valInfo.status = Status.Unstaked;
             // it's ok if validator not in highest set
             tryRemoveValidatorInHighestSet(validator);
-
-            // call proposal contract to set unpass.
-            // validator have to repropose to rebecome a validator.
-            proposal.setUnpassed(validator);
         }
 
         if(withdrawableReward(validator,staker)>0){
@@ -785,9 +773,6 @@ contract Validators is Params {
         if (highestValidatorsSet.length > 1) {
             tryJailValidator(val);
 
-            // call proposal contract to set unpass.
-            // you have to repropose to be a validator.
-            proposal.setUnpassed(val);
             emit LogRemoveValidator(val, hb, block.timestamp);
         }
     }
