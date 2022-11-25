@@ -10,7 +10,7 @@ interface IHPN {
 
 interface IPunish
 {
-    function cleanPunishRecord(address _validator) external returns (bool);    
+    function cleanPunishRecord(address _validator) external returns (bool);
 }
 
 contract Validators is Params {
@@ -97,6 +97,8 @@ contract Validators is Params {
     mapping(address => address) private stakeValidator;
     //pricepershare of unstaked mastervoter
     mapping(address => uint256) private unstakedMasterperShare;
+    //unstaker => bool
+    mapping(address => bool) private isUnstaker;
     // *****************************
     // staker => validator => info
     mapping(address => mapping(address => StakingInfo)) public staked;
@@ -312,8 +314,11 @@ contract Validators is Params {
         }
         else
         {
-          //mint wrapped token to user
-          WHPN.mint{value:staking}(staker);
+            if(staker != validator){
+                isUnstaker[staker] = true;
+                //mint wrapped token to user
+                WHPN.mint{value:staking}(staker);
+            }
           payoutsTo_[staker] += profitPerShare_* staking ;
           stakeValidator[staker] = validator;
         }
@@ -623,10 +628,12 @@ contract Validators is Params {
    function withdrawStaking(address validator) external {
         address payable staker = payable(msg.sender);
         StakingInfo storage stakingInfo = staked[staker][validator];
+        bool isStaker;
         if(stakingInfo.coins == 0)
        {
            stakingInfo = stakedMaster[staker][validator];
            validator = masterVoterInfo[validator].validator ;
+           isStaker=true;
        }
         require(
             validatorInfo[validator].status != Status.NotExist,
@@ -644,9 +651,13 @@ contract Validators is Params {
         stakingInfo.coins = 0;
         stakingInfo.unstakeBlock = 0;
         stakeValidator[staker]=address(0);
-        // send stake back to staker
-        staker.transfer(staking);
-
+        if(!isUnstaker[staker]){
+            // send stake back to staker
+            staker.transfer(staking);
+        }
+        else{
+            isUnstaker[staker] = false;
+        }
         emit LogWithdrawStaking(staker, validator, staking, block.timestamp);
 
     }
