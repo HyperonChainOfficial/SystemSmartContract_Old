@@ -82,6 +82,8 @@ contract Proxy_Validator is Ownership {
 
     address public validatorContract;
 
+    bool public initialised;
+
     modifier onlyMiner() {
         require(msg.sender == block.coinbase, "Miner only");
         _;
@@ -92,9 +94,10 @@ contract Proxy_Validator is Ownership {
         _;
     }
 
-    function setValidatorContract(address validatorContractNew) external onlyOwner returns(bool){
+    function setValidatorContract(address validatorContractNew, bool initialise) external onlyOwner returns(bool){
         require(validatorContractNew != address(0), "Invalid Address");
         validatorContract = validatorContractNew;
+        initialised = initialise;
         return true;
     }
 
@@ -110,8 +113,10 @@ contract Proxy_Validator is Ownership {
     {
         address val = msg.sender;
         uint256 reward = msg.value;
-        
-        InterfaceValidator(validatorContract).distributeBlockReward{value: msg.value}(val,reward);
+
+        if(initialised){
+            InterfaceValidator(validatorContract).distributeBlockReward{value: msg.value}(val,reward);
+        }
     } 
 
     function updateActiveValidatorSet(address[] memory newSet, uint256 epoch)
@@ -119,7 +124,9 @@ contract Proxy_Validator is Ownership {
         onlyMiner
         onlyBlockEpoch(epoch)
     {   
-        InterfaceValidator(validatorContract).updateActiveValidatorSet(newSet,epoch);
+        if(initialised){
+            InterfaceValidator(validatorContract).updateActiveValidatorSet(newSet,epoch);
+        }
     } 
 
     
