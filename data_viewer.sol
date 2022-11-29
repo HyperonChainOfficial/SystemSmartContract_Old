@@ -33,7 +33,11 @@ interface InterfaceValidator {
     function staked(address staker, address validator) external view returns(uint256, uint256, uint256, uint256);
     function stakedMaster(address staker, address masterVoter) external view returns(uint256, uint256, uint256, uint256);
     function totalsupply() external view returns(uint256);
+    function MinimalStakingCoin() external view returns(uint256);
+    function isTopValidator(address who) external view returns (bool);
     function StakingLockPeriod() external view returns(uint64);
+    function UnstakeLockPeriod() external view returns(uint64);
+    function WithdrawProfitPeriod() external view returns(uint64);
 
 
 
@@ -45,7 +49,7 @@ interface InterfaceValidator {
 
 contract ValidatorData {
 
-    InterfaceValidator public valContract = InterfaceValidator(0x01a0cd85058881Ed08436E0cdF2664e3Df80Bd40);
+    InterfaceValidator public valContract = InterfaceValidator(0x10075Fbe6f6c807C13b417913b617aBA55e2b88E);
     
   
 
@@ -116,8 +120,8 @@ contract ValidatorData {
         (stakedCoins, unstakeBlock, , ) = valContract.staked(user,validatorAddress);
         
 
-        if(unstakeBlock + valContract.StakingLockPeriod() > block.number){
-            waitingBlocksForUnstake = (unstakeBlock + valContract.StakingLockPeriod()) - block.number;
+        if(unstakeBlock + valContract.StakingLockPeriod() > block.timestamp){
+            waitingBlocksForUnstake = (unstakeBlock + valContract.StakingLockPeriod()) - block.timestamp;
         }
         else{
             waitingBlocksForUnstake=0;
@@ -132,7 +136,7 @@ contract ValidatorData {
 
     function validatorSpecificInfo2(address validatorAddress, address user) external view returns(uint256 totalStakedCoins, InterfaceValidator.Status status, uint256 selfStakedCoins, uint256 masterVoters, uint256 stakers, address){
         address[] memory stakersArray;
-        address[] memory masterVotersArray;
+        address[] memory masterVotersArray  = valContract.getValidatorInfo(validatorAddress);
         (, status, totalStakedCoins, , , , , ,) = valContract.validatorInfo(validatorAddress);
 
         (selfStakedCoins, , , ) = valContract.staked(validatorAddress,validatorAddress);
@@ -149,8 +153,8 @@ contract ValidatorData {
         (stakedCoins, unstakeBlock, , ) = valContract.stakedMaster(user,masterVoter);
         
 
-        if(unstakeBlock + valContract.StakingLockPeriod() > block.number){
-            waitingBlocksForUnstake = (unstakeBlock + valContract.StakingLockPeriod()) - block.number;
+        if(unstakeBlock + valContract.StakingLockPeriod() > block.timestamp){
+            waitingBlocksForUnstake = (unstakeBlock + valContract.StakingLockPeriod()) - block.timestamp;
         }
         else{
             waitingBlocksForUnstake=0;
@@ -168,7 +172,59 @@ contract ValidatorData {
     }
 
     
+    function waitingWithdrawProfit(address user, address validatorOrMaster) external view returns(uint256){
+        //only validator will have waiting 
+        if(user== validatorOrMaster && valContract.isTopValidator(validatorOrMaster)){
+            (, , , , , , uint256 lastWithdrawProfitsBlock , , ) = valContract.validatorInfo(validatorOrMaster);
+            
+            if(lastWithdrawProfitsBlock + valContract.WithdrawProfitPeriod() > block.timestamp){
+                return (lastWithdrawProfitsBlock + valContract.WithdrawProfitPeriod()) - block.timestamp;
+            }
+        }
+        
+       return 0;
+    }
 
+    function waitingUnstaking(address user, address validatorOrMaster) external view returns(uint256){
+        
+        (uint256 stakedCoins, , , uint256 stakeTime ) = valContract.staked(user,validatorOrMaster);
+        if(stakedCoins > 0){
+
+            if(stakeTime + valContract.UnstakeLockPeriod() > block.timestamp){
+                return (stakeTime + valContract.UnstakeLockPeriod()) - block.timestamp;
+            }
+        }
+        else{
+            (, , , uint256 stakeTimeMaster) = valContract.stakedMaster(user,validatorOrMaster);
+            if(stakeTimeMaster+valContract.UnstakeLockPeriod() > block.timestamp){
+                return (stakeTimeMaster + valContract.UnstakeLockPeriod()) - block.timestamp;
+            }
+        }
+
+        return 0;
+    }
+
+    function waitingWithdrawStaking(address user, address validatorOrMaster) external view returns(uint256){
+        (uint256 stakedCoins, uint256 unstakeBlock, ,  ) = valContract.staked(user,validatorOrMaster);
+        if(stakedCoins > 0){
+
+            if(unstakeBlock + valContract.StakingLockPeriod() > block.timestamp){
+                return (unstakeBlock + valContract.StakingLockPeriod()) - block.timestamp;
+            }
+        }
+        else{
+            (, uint256 unstakeBlockMaster, , ) = valContract.stakedMaster(user,validatorOrMaster);
+            if(unstakeBlockMaster+valContract.StakingLockPeriod() > block.timestamp){
+                return (unstakeBlockMaster + valContract.StakingLockPeriod()) - block.timestamp;
+            }
+        }
+
+        return 0;
+    }
+
+    function minimumStakingAmount() external view returns(uint256){
+        return valContract.MinimalStakingCoin();
+    }
 
 
 }
