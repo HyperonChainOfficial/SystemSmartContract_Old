@@ -118,14 +118,12 @@ contract ValidatorData {
         uint256 unstakeBlock;
 
         (stakedCoins, unstakeBlock, , ) = valContract.staked(user,validatorAddress);
-        
 
-        if(unstakeBlock + valContract.StakingLockPeriod() > block.timestamp){
-            waitingBlocksForUnstake = (unstakeBlock + valContract.StakingLockPeriod()) - block.timestamp;
+        if(unstakeBlock!=0){
+            waitingBlocksForUnstake = stakedCoins;
+            stakedCoins = 0;
         }
-        else{
-            waitingBlocksForUnstake=0;
-        }
+        
 
         uint256 yy=0;
          yy = valContract.withdrawableReward(validatorAddress,user);
