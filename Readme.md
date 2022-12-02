@@ -1,8 +1,9 @@
-Hyperon chain custom smart contracts:
+Hyperon chain system smart contracts:
 
-(1) update the defaultMaster address before mainnet deployment.
+(1) Validator: This smart contract performs transactions related to validators. 
 
-(2) update total supply in validator contract.
+(2) Staking: This smart contract will host a custom staking logic for the master voters, staking voters, and non-staking voters.
 
+(3) Punish: This smart contract punishes the validator who misbehave.
 
-WHPN Token contract in HPN Testnet:  0xbf15106eCe2f22e6a9C88Ca9214f969d0495ED59
+(4) WHPN: This is a Wrapped Token for HPN
