@@ -3,21 +3,78 @@ pragma solidity 0.8.14;
 
 import "./Params.sol";
 
-interface IHPN {
-    function mint(address _user) external payable;
-    function lastTransfer(address _user) external view returns(uint256);
-}
-
 interface IPunish
 {
     function cleanPunishRecord(address _validator) external returns (bool);
 }
 
-interface Proxy{
-    function owner() external view returns(address);
+contract Ownership {
+
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(msg.sender);
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == msg.sender, "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
 }
 
-contract Validators is Params {
+contract Validators is Params, Ownership {
 
     enum Status {
         // validator not exist, default status
@@ -50,9 +107,6 @@ contract Validators is Params {
         uint256 lastWithdrawProfitsBlock;
         // Address list of user who has staked for this validator
         address[] stakers;
-        address[] masterArray;
-        uint256 masterCoins;
-        uint256 masterStakerCoins;
     }
 
     struct StakingInfo {
@@ -66,18 +120,7 @@ contract Validators is Params {
     }
 
     mapping(address => Validator) public validatorInfo;
-    //  *************************
-    struct MasterVoter{
-      address validator;
-      address[] stakers;
-      uint256 coins;
-      uint256 unstakeBlock;
-      uint256 stakerCoins;
-    }
-    mapping(address => MasterVoter) public masterVoterInfo;
-    uint256 private constant masterVoterlimit = 2000000 ether; //2% of total supply of 100 million
-    // staker => masterVoter => info
-    mapping(address => mapping(address => StakingInfo)) public stakedMaster;
+
     uint256 private constant maxReward = 12000000 ether ; // 12 Million HPN
     uint256 private constant rewardhalftime = 15552000 ; //6 months
     struct RewardInfo
@@ -89,20 +132,7 @@ contract Validators is Params {
     RewardInfo public rewardInfo;
     uint256 startingTime;
 
-    // staker => validator => lastRewardTime
-    mapping(address => mapping(address => uint)) private stakeTime;
-    //validator => LastRewardtime
-    mapping( address => uint) private lastRewardTime;
-    //validator => lastRewardTime => reflectionMasterPerent
-    mapping(address => mapping( uint => uint )) private reflectionMasterPerent;
-    uint256 private profitPerShare_ ;
-    mapping(address => uint256) public payoutsTo_;
-    //validator of a staker
-    mapping(address => address) private stakeValidator;
-    //pricepershare of unstaked mastervoter
-    mapping(address => uint256) private unstakedMasterperShare;
-    //unstaker => bool
-    mapping(address => bool) private isUnstaker;
+
     // *****************************
     // staker => validator => info
     mapping(address => mapping(address => StakingInfo)) public staked;
@@ -164,21 +194,16 @@ contract Validators is Params {
     event LogDistributeBlockReward(
           address indexed coinbase,
           uint256 blockReward,
-          uint256 priceperShare,
+          bool isStakingRewards,
           uint256 time
       );
     event LogUpdateValidator(address[] newSet);
     event LogStake(
         address indexed staker,
         address indexed val,
-        address indexed _masterVoter,
         uint256 staking,
-        uint256 payout,
-        uint256 priceperShare,
         uint256 time
-    );
-
-    event withdrawStakingRewardEv(address user,address validator,uint reward,uint timeStamp);
+        );  
 
     modifier onlyNotRewarded() {
         require(
@@ -197,16 +222,19 @@ contract Validators is Params {
         _;
     }
 
-    //this sets WHPN contract address. It can be called only once.
-    //this should set after the contract is initialized.
-    IHPN public WHPN;
-    bool check;
-    function setWHPN(address a) external{
-        require(!check);
-        WHPN = IHPN(a);
-        check=true;
-    }
 
+
+    address public StakingContract;
+    //this sets Staking contract address.
+    //this should set after the contract is initialized.
+
+    function setStakingContract(address _StakingContract) onlyOwner external returns(bool){
+        StakingContract = _StakingContract;
+        (bool success, ) = _StakingContract.call(
+            abi.encodeWithSignature("setValidators(address[])", currentValidatorSet)
+        );
+        return success;
+    }
     // this is initialized by the blockchain itself.
     // so no need to initialize separately.
     function initialize(address[] calldata vals) external onlyNotInitialized {
@@ -215,9 +243,6 @@ contract Validators is Params {
 
         for (uint256 i = 0; i < vals.length; i++) {
             require(vals[i] != address(0), "err1");
-
-            lastRewardTime[vals[i]] = block.timestamp;
-            reflectionMasterPerent[vals[i]][lastRewardTime[vals[i]]] = 0;
 
             if (!isActiveValidator(vals[i])) {
                 currentValidatorSet.push(vals[i]);
@@ -234,7 +259,11 @@ contract Validators is Params {
             }
 
         }
-        rewardInfo.rewardAmount = 1 * 1e18; //1 HPN
+        if(owner() == address(0))
+        {
+            _transferOwnership(msg.sender);
+        }
+        rewardInfo.rewardAmount = 1 ether; //1 HPN
         rewardInfo.rewardDuration  = 1;
         initialized = true;
         startingTime = block.timestamp ;
@@ -242,150 +271,52 @@ contract Validators is Params {
 
     // stake for the validator
     function stake(address validator)
-        public
-        payable
-        onlyInitialized
-    {
-        address payable staker = payable(msg.sender);
-        require(unstakedMasterperShare[staker] == 0, "Blacklisted voter");
-        uint256 staking = msg.value;
+          public
+          payable
+          onlyInitialized
+          returns (bool)
+      {
+          address payable staker = payable(msg.sender);
+          uint256 staking = msg.value;
 
-        require(
-            validatorInfo[validator].status == Status.Created ||
-                validatorInfo[validator].status == Status.Staked,
-            "Can't stake to a validator in abnormal status"
-        );
+          require(
+              validatorInfo[validator].status == Status.Created ||
+                  validatorInfo[validator].status == Status.Staked,
+              "Can't stake to a validator in abnormal status"
+          );
+          require(
+              staked[staker][validator].unstakeBlock == 0,
+              "Can't stake when you are unstaking"
+          );
 
-        //***************************
-        bool isMaster;
-        if(staking >= masterVoterlimit || masterVoterInfo[staker].validator !=address(0))
-       {
-         isMaster = true;
-         require(masterVoterInfo[staker].validator==address(0) || masterVoterInfo[staker].validator==validator, "You have already staked for a validator");
-       }
-       else
-       {
-           require(stakeValidator[staker]==address(0) || stakeValidator[staker]==validator, "You have already staked for a validator");
-       }
+          Validator storage valInfo = validatorInfo[validator];
+          // The staked coins of validator must >= MinimalStakingCoin
+          require(
+              valInfo.coins + staking >= MinimalStakingCoin,
+              "Staking coins not enough"
+          );
 
-        require(
-            staked[staker][validator].unstakeBlock == 0,
-            "Can't stake when you are unstaking"
-         );
-
-        Validator storage valInfo = validatorInfo[validator];
-        // The staked coins of validator must >= MinimalStakingCoin
-        require(
-            (valInfo.coins + staking) >= MinimalStakingCoin,
-            "Staking coins not enough"
-        );
-
-        // stake at first time to this valiadtor
-        if (staked[staker][validator].coins == 0) {
-          // add staker to validator's record list
-          staked[staker][validator].index = valInfo.stakers.length;
-          valInfo.stakers.push(staker);
-          stakeTime[staker][validator] = lastRewardTime[validator];
-        }
-
-        valInfo.coins += staking;
-        if (valInfo.status != Status.Staked) {
-            valInfo.status = Status.Staked;
-        }
-        tryAddValidatorToHighestSet(validator, valInfo.coins);
-
-        // record staker's info
-        staked[staker][validator].coins += staking ;
-
-        staked[staker][validator].stakeTime = block.timestamp;
-        totalStake += staking;
-        //***************************
-        if(isMaster)
-        {
-          MasterVoter storage masterInfo = masterVoterInfo[staker];
-          masterInfo.coins  += staking;
-          if(masterInfo.validator==address(0))
-          {
-            valInfo.masterArray.push(staker);
-            masterInfo.validator = validator;
-            stakedMaster[staker][staker].index = masterInfo.stakers.length;
-            masterInfo.stakers.push(staker);
+          // stake at first time to this validator
+          if (staked[staker][validator].coins == 0) {
+              // add staker to validator's record list
+              staked[staker][validator].index = valInfo.stakers.length;
+              valInfo.stakers.push(staker);
           }
-          stakedMaster[staker][staker].coins += staking;
-          stakedMaster[staker][staker].stakeTime = block.timestamp;
-          valInfo.masterCoins += staking;
-          payoutsTo_[staker] += profitPerShare_* 3 * staking ;
-        }
-        else
-        {
-            if(staker != validator){
-                isUnstaker[staker] = true;
-                //mint wrapped token to user
-                WHPN.mint{value:staking}(staker);
-            }
-          payoutsTo_[staker] += profitPerShare_* staking ;
-          stakeValidator[staker] = validator;
-        }
-        //***************************
-        emit LogStake(staker, validator, address(0), staking, payoutsTo_[staker], profitPerShare_,  block.timestamp);
-    }
-    //***************************
-    function stakeForMaster(address _masterVoter)
-        external
-        payable
-        onlyInitialized
-    {
-        address payable staker = payable(msg.sender);
-        require(unstakedMasterperShare[staker] == 0, "Blacklisted voter");
-        uint256 staking = msg.value;
-        require(stakeValidator[staker]==address(0) || stakeValidator[staker] ==_masterVoter, "You have already staked for a validator");
-        address validator =   masterVoterInfo[_masterVoter].validator;
-        require(validator != address(0), "Invalid MasterVoter");
-        require(
-            validatorInfo[validator].status == Status.Created ||
-                validatorInfo[validator].status == Status.Staked,
-            "Can't stake to a validator in abnormal status"
-        );
 
-        require(
-            stakedMaster[staker][_masterVoter].unstakeBlock == 0,
-            "Can't stake when you are unstaking"
-        );
+          valInfo.coins = valInfo.coins + staking ;
+          if (valInfo.status != Status.Staked) {
+              valInfo.status = Status.Staked;
+          }
+          tryAddValidatorToHighestSet(validator, valInfo.coins);
 
-        Validator storage valInfo = validatorInfo[validator];
-        // The staked coins of validator must >= MinimalStakingCoin
-        require(
-            (valInfo.coins + staking) >= MinimalStakingCoin,
-            "Staking coins not enough"
-        );
-        MasterVoter storage masterInfo = masterVoterInfo[_masterVoter];
-        // stake at first time to this valiadtor
-        if (stakedMaster[staker][_masterVoter].coins == 0) {
-            // add staker to validator's record list
-            stakedMaster[staker][_masterVoter].index = masterInfo.stakers.length;
-            masterInfo.stakers.push(staker);
-            stakeTime[staker][_masterVoter] = lastRewardTime[validator];
-            stakeValidator[staker] = _masterVoter;
-        }
+          // record staker's info
+          staked[staker][validator].coins = staked[staker][validator].coins + staking;
+          totalStake = totalStake + staking;
 
-        payoutsTo_[staker] += profitPerShare_* 3 * staking ;
-        stakedMaster[staker][_masterVoter].coins +=  staking;
-        masterInfo.stakerCoins += staking;
-        valInfo.coins += staking;
-        valInfo.masterStakerCoins += staking;
-        if (valInfo.status != Status.Staked) {
-            valInfo.status = Status.Staked;
-        }
-        tryAddValidatorToHighestSet(validator, valInfo.coins);
+          emit LogStake(staker, validator, staking, block.timestamp);
+          return true;
+      }
 
-        // record staker's info
-        staked[_masterVoter][validator].coins += staking;
-        stakedMaster[staker][_masterVoter].stakeTime = block.timestamp;
-        totalStake += staking;
-
-        emit LogStake(staker, _masterVoter, validator, staking, payoutsTo_[staker], profitPerShare_,  block.timestamp);
-    }
-    //***************************
     function createOrEditValidator(
         address payable feeAddr,
         string calldata moniker,
@@ -454,191 +385,65 @@ contract Validators is Params {
     }
 
     function unstake(address validator)
-        external
-        onlyInitialized
-    {
-        address staker = msg.sender;
-        StakingInfo storage stakingInfo = staked[staker][validator];
-        Validator storage valInfo = validatorInfo[validator];
-        bool isMaster;
-        bool isStaker;
-        uint256 unstakeAmount = stakingInfo.coins;
-        if(unstakeAmount > 0){
-          require(
-              validatorInfo[validator].status != Status.NotExist,
-              "Validator not exist"
-          );
-          if(masterVoterInfo[staker].coins>0)
-          {
-            require(
-                stakingInfo.stakeTime + UnstakeLockPeriod <= block.timestamp,
-                "Your Unstaking haven't unlocked yet"
-            );
-            isMaster = true;
-            unstakeAmount = masterVoterInfo[staker].coins;
-          }
-        }
-        else
-        {
-          require(
-              validatorInfo[masterVoterInfo[validator].validator].status != Status.NotExist,
-              "Validator not exist"
-          );
-          stakingInfo = stakedMaster[staker][validator];
-          unstakeAmount = stakingInfo.coins;
-          require(
-                stakingInfo.stakeTime + UnstakeLockPeriod <= block.timestamp,
-                "Your Unstaking haven't unlocked yet"
-            );
-          valInfo = validatorInfo[masterVoterInfo[validator].validator];
-          isStaker = true;
-        }
-        require(
-            stakingInfo.unstakeBlock == 0,
-            "You are already in unstaking status"
-        );
-        require(unstakeAmount > 0, "You don't have any stake");
-        // You can't unstake if the validator is the only one top validator and
-        // this unstake operation will cause staked coins of validator < MinimalStakingCoin
-        require(
-            !(highestValidatorsSet.length == 1 &&
-                isTopValidator(validator) &&
-                (valInfo.coins - unstakeAmount) < MinimalStakingCoin),
-            "You can't unstake, validator list will be empty after this operation!"
-        );
+      external
+      onlyInitialized
+      returns (bool)
+  {
+      address staker = msg.sender;
+      require(
+          validatorInfo[validator].status != Status.NotExist,
+          "Validator not exist"
+      );
 
-        if(isStaker)
-        {
-          MasterVoter storage masterInfo = masterVoterInfo[validator];
-          // try to remove this staker out of validator stakers list.
-          if (stakingInfo.index != masterInfo.stakers.length - 1) {
-              masterInfo.stakers[stakingInfo.index] = masterInfo.stakers[masterInfo
-                  .stakers
-                  .length - 1];
-              // update index of the changed staker.
-              staked[masterInfo.stakers[stakingInfo.index]][validator]
-                  .index = stakingInfo.index;
-          }
-          masterInfo.stakers.pop();
-          masterInfo.coins -= unstakeAmount ;
-          valInfo.masterStakerCoins -= unstakeAmount;
-          masterInfo.stakerCoins -= unstakeAmount;
-        }
-        else{
-          // move all the stakers of the master to default master
-          if(isMaster)
-          {
-            unstakedMasterperShare[staker] = profitPerShare_;
-            bool isDone;
-            for (uint256 i = 0; i < valInfo.masterArray.length - 1; i++) {
-                if(valInfo.masterArray[i] == staker)
-                {
-                    isDone=true;
-                }
-                if(isDone)
-                {
-                    valInfo.masterArray[i] = valInfo.masterArray[i+1];
-                }
-            }
-            valInfo.masterArray.pop();
-            valInfo.coins -= masterVoterInfo[staker].stakerCoins;
-            valInfo.masterCoins -= unstakeAmount;
-            valInfo.masterStakerCoins -= masterVoterInfo[staker].stakerCoins;
-            delete masterVoterInfo[staker].stakers ;
-            masterVoterInfo[staker].validator = address(0);
-            masterVoterInfo[staker].coins = 0;
-          }
-          // try to remove this staker out of validator stakers list.
-          if (stakingInfo.index != valInfo.stakers.length - 1) {
-              valInfo.stakers[stakingInfo.index] = valInfo.stakers[valInfo
-                  .stakers
-                  .length - 1];
-              // update index of the changed staker.
-              staked[valInfo.stakers[stakingInfo.index]][validator]
-                  .index = stakingInfo.index;
-          }
-          valInfo.stakers.pop();
-        }
-        valInfo.coins -= unstakeAmount;
-        stakingInfo.unstakeBlock = block.timestamp;
-        stakingInfo.index = 0;
-        totalStake -= unstakeAmount;
-        // try to remove it out of active validator set if validator's coins < MinimalStakingCoin
-        if (valInfo.coins < MinimalStakingCoin) {
-            valInfo.status = Status.Unstaked;
-            // it's ok if validator not in highest set
-            tryRemoveValidatorInHighestSet(validator);
-        }
+      StakingInfo storage stakingInfo = staked[staker][validator];
+      Validator storage valInfo = validatorInfo[validator];
+      uint256 unstakeAmount = stakingInfo.coins;
 
-        if(withdrawableReward(validator,staker)>0){
-            withdrawStakingReward(validator);
-        }
-        stakeTime[staker][validator] = 0 ;
-        payoutsTo_[staker] = 0;
-        emit LogUnstake(staker, validator, unstakeAmount, block.timestamp);
-    }
+      require(
+          stakingInfo.unstakeBlock == 0,
+          "You are already in unstaking status"
+      );
+      require(unstakeAmount > 0, "You don't have any stake");
+      // You can't unstake if the validator is the only one top validator and
+      // this unstake operation will cause staked coins of validator < MinimalStakingCoin
+      require(
+          !(highestValidatorsSet.length == 1 &&
+              isTopValidator(validator) &&
+              valInfo.coins - unstakeAmount < MinimalStakingCoin),
+          "You can't unstake, validator list will be empty after this operation!"
+      );
 
-    function withdrawStakingReward(address validatorOrMastervoter) public
-   {
-       address payable staker = payable(msg.sender);
+      // try to remove this staker out of validator stakers list.
+      if (stakingInfo.index != valInfo.stakers.length - 1) {
+          valInfo.stakers[stakingInfo.index] = valInfo.stakers[valInfo
+              .stakers
+              .length - 1];
+          // update index of the changed staker.
+          staked[valInfo.stakers[stakingInfo.index]][validator]
+              .index = stakingInfo.index;
+      }
+      valInfo.stakers.pop();
 
-       StakingInfo storage stakingInfo = staked[staker][validatorOrMastervoter];
-       uint256 _lastTransferTime =  WHPN.lastTransfer(staker);
-       uint256 reward ;
-       if(stakingInfo.coins == 0)
-       {
-         reward = dividendsOf(staker, stakedMaster[staker][validatorOrMastervoter].coins * 3) ;
-       }
-       else if(masterVoterInfo[staker].coins>0)
-        {
-            require(stakeTime[staker][validatorOrMastervoter] > 0 , "nothing staked");
-            require(stakeTime[staker][validatorOrMastervoter] < lastRewardTime[validatorOrMastervoter], "no reward yet");
-            uint256 validPercent = reflectionMasterPerent[validatorOrMastervoter][lastRewardTime[validatorOrMastervoter]] - reflectionMasterPerent[validatorOrMastervoter][stakeTime[staker][validatorOrMastervoter]];
-            reward = dividendsOf(staker, staked[staker][validatorOrMastervoter].coins * 3) ;
-            reward += stakingInfo.coins * validPercent / 100  ;
+      valInfo.coins = valInfo.coins - unstakeAmount;
+      stakingInfo.unstakeBlock = block.number;
+      stakingInfo.index = 0;
+      totalStake = totalStake - unstakeAmount ;
 
-        }
-        else if(_lastTransferTime < staked[staker][validatorOrMastervoter].stakeTime)
-        {
-            reward = dividendsOf(staker, staked[staker][validatorOrMastervoter].coins) ;
-        }
+      // try to remove it out of active validator set if validator's coins < MinimalStakingCoin
+      if (valInfo.coins < MinimalStakingCoin) {
+          valInfo.status = Status.Unstaked;
+          // it's ok if validator not in highest set
+          tryRemoveValidatorInHighestSet(validator);
+      }
 
-       require(reward >0, "still no reward");
-       payoutsTo_[staker] += reward ;
-       stakeTime[staker][validatorOrMastervoter] = lastRewardTime[validatorOrMastervoter];
-       staker.transfer(reward);
-       emit withdrawStakingRewardEv(staker, validatorOrMastervoter, reward, block.timestamp);
-   }
-   function withdrawEmergency(address masterVoter) external returns (bool) {
-         address payable staker = payable(msg.sender);
-         StakingInfo storage stakingInfo = stakedMaster[staker][masterVoter];
-         require(stakingInfo.coins > 0 && masterVoterInfo[masterVoter].validator == address(0), "You don't have any stake");
-         uint256 withdrawAmt = stakingInfo.coins;
-         stakingInfo.coins = 0;
-         stakingInfo.unstakeBlock = 0;
-         stakingInfo.index = 0;
-         payoutsTo_[staker] = 0;
-         stakeValidator[staker]=address(0);
-         totalStake -= withdrawAmt;
-         if(unstakedMasterperShare[masterVoter] > 0)
-         {
-             withdrawAmt += (unstakedMasterperShare[masterVoter] * withdrawAmt * 3) ;
-         }
-         // send stake back to staker
-         staker.transfer(withdrawAmt);
-         emit LogWithdrawStaking(staker, address(0), withdrawAmt, block.timestamp);
-         return true;
-     }
+      emit LogUnstake(staker, validator, unstakeAmount, block.timestamp);
+      return true;
+  }
+
+
    function withdrawStaking(address validator) external {
         address payable staker = payable(msg.sender);
         StakingInfo storage stakingInfo = staked[staker][validator];
-        bool isStaker;
-        if(stakingInfo.coins == 0)
-       {
-           stakingInfo = stakedMaster[staker][validator];
-           validator = masterVoterInfo[validator].validator ;
-           isStaker=true;
-       }
         require(
             validatorInfo[validator].status != Status.NotExist,
             "validator not exist"
@@ -654,43 +459,13 @@ contract Validators is Params {
         uint256 staking = stakingInfo.coins;
         stakingInfo.coins = 0;
         stakingInfo.unstakeBlock = 0;
-        stakeValidator[staker]=address(0);
-        if(!isUnstaker[staker]){
-            // send stake back to staker
-            staker.transfer(staking);
-        }
-        else{
-            isUnstaker[staker] = false;
-        }
+        // send stake back to staker
+        staker.transfer(staking);
+
         emit LogWithdrawStaking(staker, validator, staking, block.timestamp);
 
     }
 
-    function withdrawableReward(address validator, address _user) public view returns(uint256)
-    {
-        StakingInfo memory stakingInfo = staked[_user][validator];
-
-        uint256 _lastTransferTime =  WHPN.lastTransfer(_user);
-        uint256 reward ;
-
-        if(stakingInfo.coins == 0)
-        {
-            reward = dividendsOf(_user, stakedMaster[_user][validator].coins * 3) ;
-        }
-        else if(masterVoterInfo[_user].coins>0)
-        {
-            uint256 validPercent  = reflectionMasterPerent[validator][lastRewardTime[validator]] - reflectionMasterPerent[validator][stakeTime[_user][validator]];
-            reward = dividendsOf(_user, staked[_user][validator].coins * 3) ;
-            if(validPercent >  0){
-                reward += stakingInfo.coins * validPercent / 100 ;
-            }
-        }
-        else if(_lastTransferTime < staked[_user][validator].stakeTime)
-        {
-            reward = dividendsOf(_user, staked[_user][validator].coins) ;
-        }
-        return reward;
-    }
 
     // feeAddr can withdraw profits of it's validator
     function withdrawProfits(address validator) external  {
@@ -730,23 +505,20 @@ contract Validators is Params {
 
     }
 
-    function calculateReflectionPercent(uint256 _totalAmount, uint256 _rewardAmount) public pure returns(uint){
-        return (_rewardAmount * 100000000000000000000/_totalAmount)/(1000000000000000000);
-    }
-
     // distributeBlockReward distributes block reward to all active validators
-    function distributeBlockReward(address val, uint256 reward)
+    function distributeBlockReward()
         external
         payable
         onlyMiner
         onlyNotRewarded
         onlyInitialized
     {
-
+        address val = payable(msg.sender);
         // never reach this
         if (validatorInfo[val].status == Status.NotExist) {
             return;
         }
+        uint256 reward = msg.value;
         operationsDone[block.number][uint8(Operations.Distribute)] = true;
         if(rewardInfo.totalRewardOut < maxReward){
             uint256 modDuration = block.timestamp - (startingTime % rewardhalftime);
@@ -759,9 +531,13 @@ contract Validators is Params {
             rewardInfo.totalRewardOut += rewardInfo.rewardAmount;
         }
         // Jailed validator can't get profits.
-        addProfitsToActiveValidatorsByStakePercentExcept(reward, address(0));
-
-        emit LogDistributeBlockReward(val, reward, profitPerShare_, block.timestamp);
+        uint256 stakingrew = reward * 85/100;
+        reward = reward - stakingrew;
+        addProfitsToActiveValidatorsByStakePercentExcept(reward , address(0));
+        (bool success, ) = StakingContract.call{value: stakingrew}(
+            abi.encodeWithSignature("distributeBlockReward()")
+        );
+        emit LogDistributeBlockReward(val, reward, success, block.timestamp);
     }
 
     function updateActiveValidatorSet(address[] memory newSet, uint256 epoch)
@@ -797,88 +573,7 @@ contract Validators is Params {
         tryRemoveValidatorIncoming(val);
     }
 
-    function getActiveValidators() public view returns (address[] memory) {
-        return currentValidatorSet;
-    }
-
-    function getTotalStakeOfActiveValidators()
-        public
-        view
-        returns (uint256 total, uint256 len)
-    {
-        uint256 curlen = currentValidatorSet.length;
-        for (uint256 i = 0; i < curlen; i++) {
-            if (
-                validatorInfo[currentValidatorSet[i]].status != Status.Jailed &&
-                address(0) != currentValidatorSet[i]
-            ) {
-                total += validatorInfo[currentValidatorSet[i]].coins;
-                len++;
-            }
-        }
-
-        return (total, len);
-    }
-
-    function getTotalStakeOfHighestValidatorsExcept(address val)
-        private
-        view
-        returns (uint256 total, uint256 len)
-    {
-        for (uint256 i = 0; i < highestValidatorsSet.length; i++) {
-            if (
-                validatorInfo[highestValidatorsSet[i]].status != Status.Jailed &&
-                val != highestValidatorsSet[i]
-            ) {
-                total += validatorInfo[highestValidatorsSet[i]].coins;
-                len++;
-            }
-        }
-
-        return (total, len);
-    }
-
-    function isActiveValidator(address who) public view returns (bool) {
-        for (uint256 i = 0; i < currentValidatorSet.length; i++) {
-            if (currentValidatorSet[i] == who) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    function isTopValidator(address who) public view returns (bool) {
-        for (uint256 i = 0; i < highestValidatorsSet.length; i++) {
-            if (highestValidatorsSet[i] == who) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    function getTopValidators() public view returns (address[] memory) {
-        return highestValidatorsSet;
-    }
-
-    function validateDescription(
-        string memory moniker,
-        string memory identity,
-        string memory website,
-        string memory email,
-        string memory details
-    ) public pure returns (bool) {
-        require(bytes(moniker).length <= 70, "Invalid moniker length");
-        require(bytes(identity).length <= 3000, "Invalid identity length");
-        require(bytes(website).length <= 140, "Invalid website length");
-        require(bytes(email).length <= 140, "Invalid email length");
-        require(bytes(details).length <= 280, "Invalid details length");
-
-        return true;
-    }
-
-    function tryAddValidatorToHighestSet(address val, uint256 staking)
+     function tryAddValidatorToHighestSet(address val, uint256 staking)
         internal
     {
         // do nothing if you are already in highestValidatorsSet set
@@ -962,6 +657,7 @@ contract Validators is Params {
             return;
         }
 
+
         uint256 remain;
         address last;
 
@@ -1001,16 +697,7 @@ contract Validators is Params {
                 last = val;
                 validatorInfo[val].hbIncoming = validatorInfo[val]
                     .hbIncoming
-                    + (reward * 15 / 100);
-
-                uint256 lastRewardMasterHold = reflectionMasterPerent[val][lastRewardTime[val]];
-                lastRewardTime[val] = block.timestamp;
-
-                uint256 unstakedvotercoins = validatorInfo[val].coins - (validatorInfo[val].masterStakerCoins + validatorInfo[val].masterCoins);
-                if(validatorInfo[val].masterCoins>0){
-                    reflectionMasterPerent[val][lastRewardTime[val]] = lastRewardMasterHold + calculateReflectionPercent(validatorInfo[val].masterCoins, reward * 15 / 100);
-                }
-                profitPerShare_ += ((reward * 70 / 100) / (((validatorInfo[val].masterStakerCoins + validatorInfo[val].masterCoins) * 3) + unstakedvotercoins))  ;
+                    + reward;
             }
         }
 
@@ -1054,31 +741,135 @@ contract Validators is Params {
             }
         }
     }
-    function dividendsOf(address _user, uint256 coins)
-        view
-        public
-        returns(uint256)
-    {
-         return (uint256) ((profitPerShare_* coins)-(payoutsTo_[_user]) );
-    }
-    function getValidatorInfo(address val) public view returns (
-            address[] memory
-        )
-    {
-        return validatorInfo[val].masterArray;
-    }
-    function getMasterVoterInfo(address masterVoter)
+    function getValidatorInfo(address val)
         public
         view
         returns (
+            address payable,
+            Status,
+            uint256,
+            uint256,
+            uint256,
+            uint256,
             address[] memory
         )
     {
-        return masterVoterInfo[masterVoter].stakers ;
+        Validator memory v = validatorInfo[val];
+
+        return (
+            v.feeAddr,
+            v.status,
+            v.coins,
+            v.hbIncoming,
+            v.totalJailedHB,
+            v.lastWithdrawProfitsBlock,
+            v.stakers
+        );
     }
 
-    function emrgencyWithdrawFund()external {
-        require(msg.sender==Proxy(ValidatorContractAddr).owner());
+    function getStakingInfo(address staker, address val)
+        public
+        view
+        returns (
+            uint256,
+            uint256,
+            uint256
+        )
+    {
+        return (
+            staked[staker][val].coins,
+            staked[staker][val].unstakeBlock,
+            staked[staker][val].index
+        );
+    }
+      function getActiveValidators() public view returns (address[] memory) {
+        return currentValidatorSet;
+    }
+
+    function getTotalStakeOfActiveValidators()
+        public
+        view
+        returns (uint256 total, uint256 len)
+    {
+        return getTotalStakeOfActiveValidatorsExcept(address(0));
+    }
+
+    function getTotalStakeOfActiveValidatorsExcept(address val)
+        private
+        view
+        returns (uint256 total, uint256 len)
+    {
+        for (uint256 i = 0; i < currentValidatorSet.length; i++) {
+            if (
+                validatorInfo[currentValidatorSet[i]].status != Status.Jailed &&
+                val != currentValidatorSet[i]
+            ) {
+                total = total + validatorInfo[currentValidatorSet[i]].coins;
+                len++;
+            }
+        }
+
+        return (total, len);
+    }
+
+    function isActiveValidator(address who) public view returns (bool) {
+        for (uint256 i = 0; i < currentValidatorSet.length; i++) {
+            if (currentValidatorSet[i] == who) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function isTopValidator(address who) public view returns (bool) {
+        for (uint256 i = 0; i < highestValidatorsSet.length; i++) {
+            if (highestValidatorsSet[i] == who) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function getTopValidators() public view returns (address[] memory) {
+        return highestValidatorsSet;
+    }
+
+    function validateDescription(
+        string memory moniker,
+        string memory identity,
+        string memory website,
+        string memory email,
+        string memory details
+    ) public pure returns (bool) {
+        require(bytes(moniker).length <= 70, "Invalid moniker length");
+        require(bytes(identity).length <= 3000, "Invalid identity length");
+        require(bytes(website).length <= 140, "Invalid website length");
+        require(bytes(email).length <= 140, "Invalid email length");
+        require(bytes(details).length <= 280, "Invalid details length");
+
+        return true;
+    }
+      function getTotalStakeOfHighestValidatorsExcept(address val)
+        private
+        view
+        returns (uint256 total, uint256 len)
+    {
+        for (uint256 i = 0; i < highestValidatorsSet.length; i++) {
+            if (
+                validatorInfo[highestValidatorsSet[i]].status != Status.Jailed &&
+                val != highestValidatorsSet[i]
+            ) {
+                total += validatorInfo[highestValidatorsSet[i]].coins;
+                len++;
+            }
+        }
+
+        return (total, len);
+    }
+    
+    function emrgencyWithdrawFund() external onlyOwner {      
         payable(msg.sender).transfer(address(this).balance);
     }
 }
