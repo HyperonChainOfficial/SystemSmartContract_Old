@@ -24,11 +24,51 @@ interface InterfaceValidator {
         string details;
     }
     function getTopValidators() external view returns(address[] memory);
-    function validatorInfo(address val) external view returns(address payable, Status, uint256, Description memory,uint256 ,uint256 ,uint256  ,uint256 ,uint256);
+    function validatorInfo(address val) external view returns(address payable, Status, uint256, Description memory,uint256 ,uint256 ,uint256  );
     function getValidatorInfo(address val)external view returns(address[]memory);
     function getMasterVoterInfo(address master)external view returns(address[]memory);
     function totalStake() external view returns(uint256);
     function masterVoterInfo(address masterVoter) external view returns(address,uint256,uint256);
+    function withdrawableReward(address validator, address _user) external view returns(uint256);
+    function staked(address staker, address validator) external view returns(uint256, uint256, uint256, uint256);
+    function stakedMaster(address staker, address masterVoter) external view returns(uint256, uint256, uint256, uint256);
+    function totalsupply() external view returns(uint256);
+    function MinimalStakingCoin() external view returns(uint256);
+    function isTopValidator(address who) external view returns (bool);
+    function StakingLockPeriod() external view returns(uint64);
+    function UnstakeLockPeriod() external view returns(uint64);
+    function WithdrawProfitPeriod() external view returns(uint64);
+
+
+
+}
+
+interface InterfaceStaking {
+    enum Status {
+        // validator not exist, default status
+        NotExist,
+        // validator created
+        Created,
+        // anyone has staked for the validator
+        Staked,
+        // validator's staked coins < MinimalStakingCoin
+        Unstaked,
+        // validator is jailed by system(validator have to repropose)
+        Jailed
+    }
+    struct Description {
+        string moniker;
+        string identity;
+        string website;
+        string email;
+        string details;
+    }
+    function getTopValidators() external view returns(address[] memory);
+    function validatorInfo(address val) external view returns(address payable, Status, uint256, Description memory,uint256 ,uint256 ,uint256  ,uint256 ,uint256);
+    function getValidatorInfo(address val)external view returns(address[]memory, address[] memory);
+    function getMasterVoterInfo(address master)external view returns(address[]memory);
+    function totalStake() external view returns(uint256);
+    function masterVoterInfo(address masterVoter) external view returns(address,uint256,uint256, uint256);
     function withdrawableReward(address validator, address _user) external view returns(uint256);
     function staked(address staker, address validator) external view returns(uint256, uint256, uint256, uint256);
     function stakedMaster(address staker, address masterVoter) external view returns(uint256, uint256, uint256, uint256);
@@ -49,8 +89,8 @@ interface InterfaceValidator {
 
 contract ValidatorData {
 
-    InterfaceValidator public valContract = InterfaceValidator(0x10075Fbe6f6c807C13b417913b617aBA55e2b88E);
-    
+    InterfaceValidator public valContract = InterfaceValidator(0x000000000000000000000000000000000000f000);
+    InterfaceStaking public stakingContract = InterfaceStaking(0xE447cb7777eF66a21Cc6dD2FB83ED043260DEf89);
   
 
     function getAllValidatorInfo() external view returns (uint256 totalValidatorCount,uint256 totalStakedCoins,address[] memory,InterfaceValidator.Status[] memory,uint256[] memory,string[] memory,string[] memory)
@@ -64,7 +104,7 @@ contract ValidatorData {
         string[] memory websiteArray = new string[](totalValidators);
         
         for(uint8 i=0; i < totalValidators; i++){
-            (, InterfaceValidator.Status status, uint256 coins, InterfaceValidator.Description memory description, , , , , ) = valContract.validatorInfo(highestValidatorsSet[i]);
+            (, InterfaceValidator.Status status, uint256 coins, InterfaceValidator.Description memory description, , , ) = valContract.validatorInfo(highestValidatorsSet[i]);
             
             
             statusArray[i] = status;
@@ -91,10 +131,10 @@ contract ValidatorData {
         uint256 stakedCoins;
 
         for(uint8 i=0; i<highestValidatorsSet.length; i++){
-             masterVoters = valContract.getValidatorInfo(highestValidatorsSet[i]);
+             (masterVoters,) = stakingContract.getValidatorInfo(highestValidatorsSet[i]);
             
             for(uint8 j=0; j<masterVoters.length; j++){
-                ( validatorAddress,  stakedCoins, ) = valContract.masterVoterInfo(masterVoters[j]);
+                ( validatorAddress,  stakedCoins, ,) = stakingContract.masterVoterInfo(masterVoters[j]);
 
                 masterVotersArray[counter] = masterVoters[j];
                 validatorArray[counter] = validatorAddress;
@@ -112,12 +152,12 @@ contract ValidatorData {
 
     function validatorSpecificInfo1(address validatorAddress, address user) external view returns(string memory identityName, string memory website, string memory otherDetails, uint256 withdrawableRewards, uint256 stakedCoins, uint256 waitingBlocksForUnstake ){
         
-        (, , , InterfaceValidator.Description memory description, , , , , ) = valContract.validatorInfo(validatorAddress);
+        (, , , InterfaceValidator.Description memory description, , , ) = valContract.validatorInfo(validatorAddress);
                 
         
         uint256 unstakeBlock;
 
-        (stakedCoins, unstakeBlock, , ) = valContract.staked(user,validatorAddress);
+        (stakedCoins, unstakeBlock, , ) = stakingContract.staked(user,validatorAddress);
 
         if(unstakeBlock!=0){
             waitingBlocksForUnstake = stakedCoins;
@@ -126,7 +166,7 @@ contract ValidatorData {
         
 
         uint256 yy=0;
-         yy = valContract.withdrawableReward(validatorAddress,user);
+         yy = stakingContract.withdrawableReward(validatorAddress,user);
 
         return(description.identity, description.website, description.details, yy, stakedCoins, waitingBlocksForUnstake) ;
     }
@@ -134,10 +174,11 @@ contract ValidatorData {
 
     function validatorSpecificInfo2(address validatorAddress, address user) external view returns(uint256 totalStakedCoins, InterfaceValidator.Status status, uint256 selfStakedCoins, uint256 masterVoters, uint256 stakers, address){
         address[] memory stakersArray;
-        address[] memory masterVotersArray  = valContract.getValidatorInfo(validatorAddress);
-        (, status, totalStakedCoins, , , , , ,) = valContract.validatorInfo(validatorAddress);
+        address[] memory masterVotersArray;
+        (masterVotersArray, stakersArray)  = stakingContract.getValidatorInfo(validatorAddress);
+        (, status, totalStakedCoins, , ,  ,) = valContract.validatorInfo(validatorAddress);
 
-        (selfStakedCoins, , , ) = valContract.staked(validatorAddress,validatorAddress);
+        (selfStakedCoins, , , ) = stakingContract.staked(validatorAddress,validatorAddress);
 
         return (totalStakedCoins, status, selfStakedCoins, masterVotersArray.length, stakersArray.length, user);
     }
@@ -148,32 +189,32 @@ contract ValidatorData {
          
         uint256 unstakeBlock;
 
-        (stakedCoins, unstakeBlock, , ) = valContract.stakedMaster(user,masterVoter);
+        (stakedCoins, unstakeBlock, , ) = stakingContract.stakedMaster(user,masterVoter);
         
 
-        if(unstakeBlock + valContract.StakingLockPeriod() > block.timestamp){
-            waitingBlocksForUnstake = (unstakeBlock + valContract.StakingLockPeriod()) - block.timestamp;
+        if(unstakeBlock + stakingContract.StakingLockPeriod() > block.timestamp){
+            waitingBlocksForUnstake = (unstakeBlock + stakingContract.StakingLockPeriod()) - block.timestamp;
         }
         else{
             waitingBlocksForUnstake=0;
         }
 
-        ( ,  totalStakedCoins, ) = valContract.masterVoterInfo(masterVoter);
+        ( ,,,  totalStakedCoins ) = stakingContract.masterVoterInfo(masterVoter);
 
-        totalStakers = valContract.getMasterVoterInfo(masterVoter).length;
+        totalStakers = stakingContract.getMasterVoterInfo(masterVoter).length;
 
-        (selfStakedMaster, , , ) = valContract.stakedMaster(masterVoter,masterVoter);
+        (selfStakedMaster, , , ) = stakingContract.stakedMaster(masterVoter,masterVoter);
 
 
 
-        return( valContract.withdrawableReward(masterVoter,user), stakedCoins, waitingBlocksForUnstake, totalStakedCoins, totalStakers, selfStakedMaster) ;
+        return( stakingContract.withdrawableReward(masterVoter,user), stakedCoins, waitingBlocksForUnstake, totalStakedCoins, totalStakers, selfStakedMaster) ;
     }
 
     
     function waitingWithdrawProfit(address user, address validatorOrMaster) external view returns(uint256){
         //only validator will have waiting 
         if(user== validatorOrMaster && valContract.isTopValidator(validatorOrMaster)){
-            (, , , , , , uint256 lastWithdrawProfitsBlock , , ) = valContract.validatorInfo(validatorOrMaster);
+            (, , , , , , uint256 lastWithdrawProfitsBlock  ) = valContract.validatorInfo(validatorOrMaster);
             
             if(lastWithdrawProfitsBlock + valContract.WithdrawProfitPeriod() > block.timestamp){
                 return (lastWithdrawProfitsBlock + valContract.WithdrawProfitPeriod()) - block.timestamp;
@@ -185,17 +226,17 @@ contract ValidatorData {
 
     function waitingUnstaking(address user, address validatorOrMaster) external view returns(uint256){
         
-        (uint256 stakedCoins, , , uint256 stakeTime ) = valContract.staked(user,validatorOrMaster);
+        (uint256 stakedCoins, , , uint256 stakeTime ) = stakingContract.staked(user,validatorOrMaster);
         if(stakedCoins > 0){
 
-            if(stakeTime + valContract.UnstakeLockPeriod() > block.timestamp){
-                return (stakeTime + valContract.UnstakeLockPeriod()) - block.timestamp;
+            if(stakeTime + stakingContract.UnstakeLockPeriod() > block.timestamp){
+                return (stakeTime + stakingContract.UnstakeLockPeriod()) - block.timestamp;
             }
         }
         else{
-            (, , , uint256 stakeTimeMaster) = valContract.stakedMaster(user,validatorOrMaster);
-            if(stakeTimeMaster+valContract.UnstakeLockPeriod() > block.timestamp){
-                return (stakeTimeMaster + valContract.UnstakeLockPeriod()) - block.timestamp;
+            (, , , uint256 stakeTimeMaster) = stakingContract.stakedMaster(user,validatorOrMaster);
+            if(stakeTimeMaster+stakingContract.UnstakeLockPeriod() > block.timestamp){
+                return (stakeTimeMaster + stakingContract.UnstakeLockPeriod()) - block.timestamp;
             }
         }
 
@@ -203,17 +244,17 @@ contract ValidatorData {
     }
 
     function waitingWithdrawStaking(address user, address validatorOrMaster) external view returns(uint256){
-        (uint256 stakedCoins, uint256 unstakeBlock, ,  ) = valContract.staked(user,validatorOrMaster);
+        (uint256 stakedCoins, uint256 unstakeBlock, ,  ) = stakingContract.staked(user,validatorOrMaster);
         if(stakedCoins > 0){
 
-            if(unstakeBlock + valContract.StakingLockPeriod() > block.timestamp){
-                return (unstakeBlock + valContract.StakingLockPeriod()) - block.timestamp;
+            if(unstakeBlock + stakingContract.StakingLockPeriod() > block.timestamp){
+                return (unstakeBlock + stakingContract.StakingLockPeriod()) - block.timestamp;
             }
         }
         else{
-            (, uint256 unstakeBlockMaster, , ) = valContract.stakedMaster(user,validatorOrMaster);
-            if(unstakeBlockMaster+valContract.StakingLockPeriod() > block.timestamp){
-                return (unstakeBlockMaster + valContract.StakingLockPeriod()) - block.timestamp;
+            (, uint256 unstakeBlockMaster, , ) = stakingContract.stakedMaster(user,validatorOrMaster);
+            if(unstakeBlockMaster+stakingContract.StakingLockPeriod() > block.timestamp){
+                return (unstakeBlockMaster + stakingContract.StakingLockPeriod()) - block.timestamp;
             }
         }
 
