@@ -25,7 +25,7 @@ interface InterfaceValidator {
     }
     function getTopValidators() external view returns(address[] memory);
     function validatorInfo(address val) external view returns(address payable, Status, uint256, Description memory,uint256 ,uint256 ,uint256  );
-    function getValidatorInfo(address val)external view returns(address[]memory);
+    function getValidatorInfo(address val)external view returns(address payable,Status,uint256,uint256,uint256,uint256,address[] memory);
     function getMasterVoterInfo(address master)external view returns(address[]memory);
     function totalStake() external view returns(uint256);
     function masterVoterInfo(address masterVoter) external view returns(address,uint256,uint256);
@@ -164,11 +164,15 @@ contract ValidatorData {
             stakedCoins = 0;
         }
         
+        uint256 availableReward;
+        if(validatorAddress == user){
+            (,,, availableReward ,,,) = valContract.getValidatorInfo(validatorAddress);
+        }
+        else{
+            availableReward = stakingContract.withdrawableReward(validatorAddress,user);
+        }
 
-        uint256 yy=0;
-         yy = stakingContract.withdrawableReward(validatorAddress,user);
-
-        return(description.identity, description.website, description.details, yy, stakedCoins, waitingBlocksForUnstake) ;
+        return(description.identity, description.website, description.details, availableReward, stakedCoins, waitingBlocksForUnstake) ;
     }
 
 
