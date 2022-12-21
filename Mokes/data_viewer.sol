@@ -90,7 +90,7 @@ interface InterfaceStaking {
 contract ValidatorData {
 
     InterfaceValidator public valContract = InterfaceValidator(0x000000000000000000000000000000000000f000);
-    InterfaceStaking public stakingContract = InterfaceStaking(0x51d11fe72fc5d2CA848AC225E0a30e0fb37365d4);
+    InterfaceStaking public stakingContract = InterfaceStaking(0x80664119e5f6a1b87897B7F3d7C7410669E61b58);
   
 
     function getAllValidatorInfo() external view returns (uint256 totalValidatorCount,uint256 totalStakedCoins,address[] memory,InterfaceValidator.Status[] memory,uint256[] memory,string[] memory,string[] memory)
