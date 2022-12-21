@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.14;
+pragma solidity 0.8.17;
 
 
 
@@ -64,7 +64,7 @@ interface InterfaceStaking {
         string details;
     }
     function getTopValidators() external view returns(address[] memory);
-    function validatorInfo(address val) external view returns(address payable, Status, uint256, Description memory,uint256 ,uint256 ,uint256  ,uint256 ,uint256);
+    function validatorInfo(address val) external view returns(uint256 ,uint256 ,uint256);
     function getValidatorInfo(address val)external view returns(address[]memory, address[] memory);
     function getMasterVoterInfo(address master)external view returns(address[]memory);
     function totalStake() external view returns(uint256);
@@ -90,7 +90,7 @@ interface InterfaceStaking {
 contract ValidatorData {
 
     InterfaceValidator public valContract = InterfaceValidator(0x000000000000000000000000000000000000f000);
-    InterfaceStaking public stakingContract = InterfaceStaking(0xE447cb7777eF66a21Cc6dD2FB83ED043260DEf89);
+    InterfaceStaking public stakingContract = InterfaceStaking(0x51d11fe72fc5d2CA848AC225E0a30e0fb37365d4);
   
 
     function getAllValidatorInfo() external view returns (uint256 totalValidatorCount,uint256 totalStakedCoins,address[] memory,InterfaceValidator.Status[] memory,uint256[] memory,string[] memory,string[] memory)
@@ -102,18 +102,35 @@ contract ValidatorData {
         uint256[] memory coinsArray = new uint256[](totalValidators);
         string[] memory identityArray = new string[](totalValidators);
         string[] memory websiteArray = new string[](totalValidators);
+        uint256 totalValidatorStaked;
         
         for(uint8 i=0; i < totalValidators; i++){
             (, InterfaceValidator.Status status, uint256 coins, InterfaceValidator.Description memory description, , , ) = valContract.validatorInfo(highestValidatorsSet[i]);
+            (uint256 totalStakedInStakingContract , , ) = stakingContract.validatorInfo(highestValidatorsSet[i]);
+
+            // following condtions is only for the validator whose contracts has incorrect staking.
+            // so just to adjust that we deducting this hard coded values
+            if(highestValidatorsSet[i] == 0x7Ca2A67dA14B2c4b3355BC47e9726fBDf546EAC7){
+                coins -= 2000032000000000000000000;
+            }
+            else if(highestValidatorsSet[i] == 0x906Bb16AF1f50d5fad3C6455808d43A06bf9639e){
+                coins -= 20000000000000000000000000;
+            }
+            else if(highestValidatorsSet[i] == 0xF95B541D22a48F1a4B01f02F9De7ED95750eC6A0){
+                coins -= 2000000000000000000000000;
+            }
+            
             
             
             statusArray[i] = status;
-            coinsArray[i] = coins;
+            coinsArray[i] = coins + totalStakedInStakingContract;
             identityArray[i] = description.identity;
             websiteArray[i] = description.website;
+
+            totalValidatorStaked += coinsArray[i];
             
         }
-        return(totalValidators, valContract.totalStake(), highestValidatorsSet, statusArray, coinsArray, identityArray, websiteArray);
+        return(totalValidators, totalValidatorStaked, highestValidatorsSet, statusArray, coinsArray, identityArray, websiteArray);
     
     
     }
@@ -129,16 +146,17 @@ contract ValidatorData {
         uint8 counter=0;
         address validatorAddress;
         uint256 stakedCoins;
+        uint256 stakerCoins;
 
         for(uint8 i=0; i<highestValidatorsSet.length; i++){
              (masterVoters,) = stakingContract.getValidatorInfo(highestValidatorsSet[i]);
             
             for(uint8 j=0; j<masterVoters.length; j++){
-                ( validatorAddress,  stakedCoins, ,) = stakingContract.masterVoterInfo(masterVoters[j]);
+                ( validatorAddress,  stakedCoins, , stakerCoins) = stakingContract.masterVoterInfo(masterVoters[j]);
 
                 masterVotersArray[counter] = masterVoters[j];
                 validatorArray[counter] = validatorAddress;
-                stakedCoinsArray[counter] = stakedCoins;
+                stakedCoinsArray[counter] = stakedCoins + stakerCoins;
                 
                 counter++;
             }
@@ -181,10 +199,11 @@ contract ValidatorData {
         address[] memory masterVotersArray;
         (masterVotersArray, stakersArray)  = stakingContract.getValidatorInfo(validatorAddress);
         (, status, totalStakedCoins, , ,  ,) = valContract.validatorInfo(validatorAddress);
+        (uint256 totalStakedInStakingContract , , ) = stakingContract.validatorInfo(validatorAddress);
 
         (selfStakedCoins, , , ) = stakingContract.staked(validatorAddress,validatorAddress);
 
-        return (totalStakedCoins, status, selfStakedCoins, masterVotersArray.length, stakersArray.length, user);
+        return ((totalStakedCoins + totalStakedInStakingContract), status, (totalStakedCoins + selfStakedCoins), masterVotersArray.length, stakersArray.length, user);
     }
 
 
