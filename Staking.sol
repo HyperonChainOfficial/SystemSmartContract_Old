@@ -100,6 +100,7 @@ interface IValidator
             address[] memory);
     function getTopValidators() external view returns(address[] memory);
     function getWHPN() external view returns(address);
+    function WithdrawProfitPeriod() external view returns(uint64);
 }
 
 contract Staking is Params, Ownership {
@@ -109,6 +110,7 @@ contract Staking is Params, Ownership {
         address[] masterArray;
         uint256 masterCoins;
         uint256 masterStakerCoins;
+        uint256 hbIncoming;
     }
 
     struct StakingInfo {
@@ -155,6 +157,18 @@ contract Staking is Params, Ownership {
 
     IValidator public validatorContract;
     IHPN public WHPN ;
+
+    uint256 private constant maxReward = 12000000 ether ; // 12 Million HPN
+    uint256 private constant rewardhalftime = 7776000 ; //3 months
+    struct RewardInfo
+    {
+        uint rewardDuration ;
+        uint256 rewardAmount ; // 0.25 HPN
+        uint256  totalRewardOut ;
+    }
+    RewardInfo public rewardInfo;
+    uint256 startingTime;
+
     event LogUnstake(
         address indexed staker,
         address indexed val,
@@ -180,10 +194,9 @@ contract Staking is Params, Ownership {
         uint256 time
     );
 
-    event withdrawStakingRewardEv(address user,address validator,uint reward,uint timeStamp);
+    event withdrawStakingRewardEv(address user,address validator,uint reward,uint timeStamp, bool isValidatorWithdraw);
 
     //this sets WHPN contract address. It can be called only once.
-    //this should set after the contract is initialized.
     bool check;
     function setWHPN(address a) external{
         require(!check);
@@ -193,10 +206,12 @@ contract Staking is Params, Ownership {
     function setValidator(address _valContract) onlyOwner external{
         validatorContract = IValidator(_valContract);
     }
-    //this sets WHPN contract address. It can be called only once.
-    //this should set after the contract is initialized.
-   function initialize() external onlyNotInitialized {
+    //initialize the contract
+    function initialize() external onlyNotInitialized {
         initialized = true;
+        rewardInfo.rewardAmount = 25 * 1e16; //1 HPN
+        rewardInfo.rewardDuration  = 1;
+        startingTime = block.timestamp ;
    }
 
     // stake for the validator
@@ -210,19 +225,18 @@ contract Staking is Params, Ownership {
         uint256 staking = msg.value;
         (, uint status, uint256 vcoins, , , ,) = validatorContract.getValidatorInfo(validator);
 
-
         require(
             status == 1 || status == 2,
             "Can't stake to a validator in abnormal status"
         );
-        
+
         bool isMaster;
         if(staking >= masterVoterlimit || masterVoterInfo[staker].validator !=address(0))
        {
 	     if(isUnstaker[staker])
-            {
-                unstake(validator);
-            }			 
+        {
+            unstake(validator);
+        }
          isMaster = true;
          require(masterVoterInfo[staker].validator==address(0) || masterVoterInfo[staker].validator==validator, "You have already staked for a validator");
        }
@@ -248,15 +262,22 @@ contract Staking is Params, Ownership {
           // add staker to validator's record list
           staked[staker][validator].index = valInfo.stakers.length;
           valInfo.stakers.push(staker);
-          stakeTime[staker][validator] = lastRewardTime[validator];
+        }
+        if(lastRewardTime[validator] == 0)
+        {
+            lastRewardTime[validator] = block.timestamp;
+        }
+        if(stakeTime[staker][validator]==0)
+        {
+          stakeTime[staker][validator] = lastRewardTime[validator] ;
         }
 
-        valInfo.coins += staking;       
+        valInfo.coins += staking;
 
         // record staker's info
         staked[staker][validator].coins += staking ;
-        staked[staker][validator].stakeTime = block.timestamp;       
-        
+        staked[staker][validator].stakeTime = block.timestamp;
+
         if(isMaster)
         {
           MasterVoter storage masterInfo = masterVoterInfo[staker];
@@ -280,10 +301,10 @@ contract Staking is Params, Ownership {
           WHPN.mint{value:staking}(staker);
           payoutsTo_[staker] += profitPerShare_* staking ;
           stakeValidator[staker] = validator;
-        }        
+        }
         emit LogStake(staker, validator, address(0), staking, payoutsTo_[staker], profitPerShare_,  block.timestamp);
     }
-    
+
     function stakeForMaster(address _masterVoter)
         external
         payable
@@ -318,19 +339,26 @@ contract Staking is Params, Ownership {
             // add staker to validator's record list
             stakedMaster[staker][_masterVoter].index = masterInfo.stakers.length;
             masterInfo.stakers.push(staker);
-            stakeTime[staker][_masterVoter] = lastRewardTime[validator];
             stakeValidator[staker] = _masterVoter;
+        }
+        if(lastRewardTime[validator] == 0)
+        {
+            lastRewardTime[validator] = block.timestamp;
+        }
+        if(stakeTime[staker][_masterVoter]==0)
+        {
+          stakeTime[staker][_masterVoter] = lastRewardTime[validator];
         }
 
         payoutsTo_[staker] += profitPerShare_* 3 * staking ;
         stakedMaster[staker][_masterVoter].coins +=  staking;
         masterInfo.stakerCoins += staking;
         valInfo.coins += staking;
-        valInfo.masterStakerCoins += staking;       
+        valInfo.masterStakerCoins += staking;
 
         // record staker's info
         staked[_masterVoter][validator].coins += staking;
-        stakedMaster[staker][_masterVoter].stakeTime = block.timestamp;        
+        stakedMaster[staker][_masterVoter].stakeTime = block.timestamp;
 
         emit LogStake(staker, _masterVoter, validator, staking, payoutsTo_[staker], profitPerShare_,  block.timestamp);
     }
@@ -386,7 +414,9 @@ contract Staking is Params, Ownership {
         require(unstakeAmount > 0, "You don't have any stake");
         // You can't unstake if the validator is the only one top validator and
         // this unstake operation will cause staked coins of validator < MinimalStakingCoin
-
+        if(withdrawableReward(validator,staker)>0){
+            withdrawStakingReward(validator);
+        }
         if(isStaker)
         {
           MasterVoter storage masterInfo = masterVoterInfo[validator];
@@ -396,19 +426,20 @@ contract Staking is Params, Ownership {
                   .stakers
                   .length - 1];
               // update index of the changed staker.
-              staked[masterInfo.stakers[stakingInfo.index]][validator]
+              stakedMaster[masterInfo.stakers[stakingInfo.index]][validator]
                   .index = stakingInfo.index;
           }
           masterInfo.stakers.pop();
-          masterInfo.coins -= unstakeAmount ;
+          //masterInfo.coins -= unstakeAmount ;
           valInfo.masterStakerCoins -= unstakeAmount;
           masterInfo.stakerCoins -= unstakeAmount;
         }
         else{
-          // move all the stakers of the master to default master
           if(isMaster)
           {
-            unstakedMasterperShare[staker] = profitPerShare_;
+            if(masterVoterInfo[staker].stakers.length > 1){
+                unstakedMasterperShare[staker] = profitPerShare_;
+            }
             bool isDone;
             for (uint256 i = 0; i < valInfo.masterArray.length - 1; i++) {
                 if(valInfo.masterArray[i] == staker)
@@ -420,15 +451,17 @@ contract Staking is Params, Ownership {
                     valInfo.masterArray[i] = valInfo.masterArray[i+1];
                 }
             }
+            MasterVoter storage masterInfo = masterVoterInfo[staker];
+            stakedMaster[staker][staker].coins = 0;
             valInfo.masterArray.pop();
-            valInfo.coins -= masterVoterInfo[staker].stakerCoins;
+            valInfo.coins -= masterInfo.stakerCoins;
             valInfo.masterCoins -= unstakeAmount;
-            valInfo.masterStakerCoins -= masterVoterInfo[staker].stakerCoins;
+            valInfo.masterStakerCoins -= masterInfo.stakerCoins;
             delete masterVoterInfo[staker].stakers ;
-            masterVoterInfo[staker].validator = address(0);
-            masterVoterInfo[staker].coins = 0;
+            masterInfo.validator = address(0);
+            masterInfo.coins = 0;
           }
-		  
+
           // try to remove this staker out of validator stakers list.
           if (stakingInfo.index != valInfo.stakers.length - 1) {
               valInfo.stakers[stakingInfo.index] = valInfo.stakers[valInfo
@@ -441,12 +474,10 @@ contract Staking is Params, Ownership {
           valInfo.stakers.pop();
         }
         valInfo.coins -= unstakeAmount;
-     
 
-        if(withdrawableReward(validator,staker)>0){
-            withdrawStakingReward(validator);
-        }
-        stakeTime[staker][validator] = 0 ;		   
+
+
+        stakeTime[staker][validator] = 0 ;
 		if(isUnstaker[staker])
           {
                stakingInfo.coins = 0;
@@ -454,52 +485,65 @@ contract Staking is Params, Ownership {
                stakeValidator[staker]=address(0);
                isUnstaker[staker] = false;
           }
-        else{  
+        else{
             stakingInfo.unstakeBlock = block.timestamp;
         }
-		 
+
         stakingInfo.index = 0;
         payoutsTo_[staker] = 0;
         emit LogUnstake(staker, validator, unstakeAmount, block.timestamp);
     }
 
-     function withdrawStakingReward(address validatorOrMastervoter) public
-   {
-       address payable staker = payable(msg.sender);
-
-       StakingInfo storage stakingInfo = staked[staker][validatorOrMastervoter];
-       uint256 _lastTransferTime =  WHPN.lastTransfer(staker);
-       uint256 reward ;
-       if(stakingInfo.coins == 0 && stakedMaster[staker][validatorOrMastervoter].coins>0)
+    function withdrawStakingReward(address validatorOrMastervoter) public
+  {
+      address payable staker = payable(msg.sender);
+      bool success;
+      StakingInfo storage stakingInfo = staked[staker][validatorOrMastervoter];
+      uint256 _lastTransferTime =  WHPN.lastTransfer(staker);
+      uint256 reward ;
+      if(validatorInfo[staker].hbIncoming > 0)
        {
-            if(stakedMaster[staker][validatorOrMastervoter].unstakeBlock==0){
-                reward = dividendsOf(staker, stakedMaster[staker][validatorOrMastervoter].coins * 3) /1e18;
-            }
+           reward = validatorInfo[staker].hbIncoming;
+           validatorInfo[staker].hbIncoming = 0;
        }
-       else if(masterVoterInfo[staker].coins>0)
-        {
-            if(staked[staker][validatorOrMastervoter].unstakeBlock==0){
-                require(stakeTime[staker][validatorOrMastervoter] > 0 , "nothing staked");
-                require(stakeTime[staker][validatorOrMastervoter] < lastRewardTime[validatorOrMastervoter], "no reward yet");
-                uint256 validPercent = reflectionMasterPerent[validatorOrMastervoter][lastRewardTime[validatorOrMastervoter]] - reflectionMasterPerent[validatorOrMastervoter][stakeTime[staker][validatorOrMastervoter]];
-                reward = dividendsOf(staker, staked[staker][validatorOrMastervoter].coins * 3) /1e18 ;
-                reward += stakingInfo.coins * validPercent / 100  ;
-            }
-        }
-        else if(_lastTransferTime < staked[staker][validatorOrMastervoter].stakeTime)
-        {
-            if(staked[staker][validatorOrMastervoter].unstakeBlock==0){
-                reward = dividendsOf(staker, staked[staker][validatorOrMastervoter].coins) /1e18 ;
-            }
-        }
+        (address feeAddr, uint status, ,uint256 vhbIncoming , ,uint256 lastWithdrawProfitsBlock , ) = validatorContract.getValidatorInfo(validatorOrMastervoter);
+       if(vhbIncoming > 0 && status != 0 && feeAddr == address(this) && (lastWithdrawProfitsBlock + validatorContract.WithdrawProfitPeriod() <= block.timestamp)){
+        reward += vhbIncoming;
+        (success, ) = address(validatorContract).call(
+            abi.encodeWithSignature("withdrawProfits(address)", staker)
+        );
+       }
+      if(masterVoterInfo[staker].coins>0)
+       {
+           if(stakingInfo.unstakeBlock==0){
+               require(stakeTime[staker][validatorOrMastervoter] > 0 , "nothing staked");
+               reward += dividendsOf(staker, masterVoterInfo[staker].coins * 3) /1e18 ;
+               if(stakeTime[staker][validatorOrMastervoter] < lastRewardTime[validatorOrMastervoter]){
+                   uint256 validPercent = reflectionMasterPerent[validatorOrMastervoter][lastRewardTime[validatorOrMastervoter]] - reflectionMasterPerent[validatorOrMastervoter][stakeTime[staker][validatorOrMastervoter]];
+                   reward += stakingInfo.coins * validPercent / 100  ;
+               }
+           }
+       }
+      else if(stakingInfo.coins == 0 && stakedMaster[staker][validatorOrMastervoter].coins>0)
+      {
+           if(stakedMaster[staker][validatorOrMastervoter].unstakeBlock==0){
+               reward += dividendsOf(staker, stakedMaster[staker][validatorOrMastervoter].coins * 3) /1e18;
+           }
+      }
+       else if(_lastTransferTime < stakingInfo.stakeTime && isUnstaker[staker])
+       {
+           if(stakingInfo.unstakeBlock==0){
+               reward += dividendsOf(staker, stakingInfo.coins) /1e18 ;
+           }
+       }
 
-       require(reward >0, "still no reward");
-       payoutsTo_[staker] += reward ;
-       stakeTime[staker][validatorOrMastervoter] = lastRewardTime[validatorOrMastervoter];
-       staker.transfer(reward);
-       emit withdrawStakingRewardEv(staker, validatorOrMastervoter, reward, block.timestamp);
-   }
-   function withdrawEmergency(address masterVoter) external returns (bool) {
+      require(reward >0, "still no reward");
+      payoutsTo_[staker] += reward * 1e18 ;
+      stakeTime[staker][validatorOrMastervoter] = lastRewardTime[validatorOrMastervoter];
+      staker.transfer(reward);
+      emit withdrawStakingRewardEv(staker, validatorOrMastervoter, reward, block.timestamp, success);
+  }
+   function withdrawEmergency(address masterVoter) external  {
          address payable staker = payable(msg.sender);
          StakingInfo storage stakingInfo = stakedMaster[staker][masterVoter];
          require(stakingInfo.coins > 0 && masterVoterInfo[masterVoter].validator == address(0), "You don't have any stake");
@@ -508,7 +552,7 @@ contract Staking is Params, Ownership {
          stakingInfo.unstakeBlock = 0;
          stakingInfo.index = 0;
          payoutsTo_[staker] = 0;
-         stakeValidator[staker]=address(0);        
+         stakeValidator[staker]=address(0);
          if(unstakedMasterperShare[masterVoter] > 0)
          {
              withdrawAmt += (unstakedMasterperShare[masterVoter] * withdrawAmt * 3) / 1e18 ;
@@ -516,7 +560,6 @@ contract Staking is Params, Ownership {
          // send stake back to staker
          staker.transfer(withdrawAmt);
          emit LogWithdrawStaking(staker, address(0), withdrawAmt, block.timestamp);
-         return true;
      }
    function withdrawStaking(address validator) external {
         address payable staker = payable(msg.sender);
@@ -528,7 +571,7 @@ contract Staking is Params, Ownership {
            validator = masterVoterInfo[validator].validator ;
            isStaker=true;
        }
-	    require(stakingInfo.coins > 0, "You don't have any stake");														  
+	    require(stakingInfo.coins > 0, "You don't have any stake");
         (, uint status, , , , , ) = validatorContract.getValidatorInfo(validator);
         require(
             status != 0,
@@ -539,16 +582,16 @@ contract Staking is Params, Ownership {
         require(
             stakingInfo.unstakeBlock + StakingLockPeriod <= block.timestamp,
             "Your staking haven't unlocked yet"
-        );       
+        );
 
         uint256 staking = stakingInfo.coins;
         stakingInfo.coins = 0;
         stakingInfo.unstakeBlock = 0;
         stakeValidator[staker]=address(0);
-        
+
         // send stake back to staker
         staker.transfer(staking);
-      
+
         emit LogWithdrawStaking(staker, validator, staking, block.timestamp);
 
     }
@@ -560,28 +603,38 @@ contract Staking is Params, Ownership {
         uint256 _lastTransferTime =  WHPN.lastTransfer(_user);
         uint256 reward ;
 
-        if(stakingInfo.coins == 0 && stakedMaster[_user][validator].coins>0)
+        if(masterVoterInfo[_user].coins>0)
         {
-             if(stakedMaster[_user][validator].unstakeBlock==0){
-                reward = dividendsOf(_user, stakedMaster[_user][validator].coins * 3) / 1e18  ;
-             }
-        }
-        else if(masterVoterInfo[_user].coins>0)
-        {
-             if(staked[_user][validator].unstakeBlock==0){
+             if(stakingInfo.unstakeBlock==0){
                 uint256 validPercent  = reflectionMasterPerent[validator][lastRewardTime[validator]] - reflectionMasterPerent[validator][stakeTime[_user][validator]];
-                reward = dividendsOf(_user, staked[_user][validator].coins * 3) / 1e18 ;
+                reward = dividendsOf(_user, masterVoterInfo[_user].coins * 3) / 1e18 ;
                 if(validPercent >  0){
                     reward += stakingInfo.coins * validPercent / 100 ;
                 }
              }
         }
-        else if(_lastTransferTime < staked[_user][validator].stakeTime)
+        else if(stakingInfo.coins == 0 && stakedMaster[_user][validator].coins>0)
         {
-            if(staked[_user][validator].unstakeBlock==0){
-                reward = dividendsOf(_user, staked[_user][validator].coins) / 1e18 ;
+             if(stakedMaster[_user][validator].unstakeBlock==0){
+                reward = dividendsOf(_user, stakedMaster[_user][validator].coins * 3) / 1e18  ;
+             }
+        }
+        else if(_lastTransferTime < stakingInfo.stakeTime)
+        {
+            if(stakingInfo.unstakeBlock==0){
+                reward = dividendsOf(_user, stakingInfo.coins) / 1e18 ;
             }
         }
+
+        //check if user is a validator
+        if(validatorInfo[_user].hbIncoming > 0)
+        {
+            reward += validatorInfo[_user].hbIncoming;
+        }
+        (address feeAddr, uint status, ,uint256 vhbIncoming , ,uint256 lastWithdrawProfitsBlock , ) = validatorContract.getValidatorInfo(_user);
+        if(vhbIncoming > 0 && status != 0 && feeAddr == address(this) && (lastWithdrawProfitsBlock + validatorContract.WithdrawProfitPeriod() <= block.timestamp)){
+            reward += vhbIncoming;
+       }
         return reward;
     }
 
@@ -592,14 +645,24 @@ contract Staking is Params, Ownership {
     // distributeBlockReward distributes block reward to all active validators
     function distributeBlockReward() external payable
     {
-        require(msg.sender == address(validatorContract), "Invalid caller");       
-
+        require(msg.sender == address(validatorContract) || msg.sender == owner(), "Invalid caller");
+        uint256 reward = msg.value;
         // Jailed validator can't get profits.
-        addProfitsToActiveValidatorsByStakePercentExcept(msg.value);
-															 
+        if(rewardInfo.totalRewardOut < maxReward){
+            uint256 modDuration = (block.timestamp - startingTime) / rewardhalftime;
+            if(modDuration != rewardInfo.rewardDuration && modDuration >= 1)
+            {
+              rewardInfo.rewardDuration = rewardInfo.rewardDuration + 1;
+              rewardInfo.rewardAmount = rewardInfo.rewardAmount/2;
+            }
+            reward += rewardInfo.rewardAmount;
+            rewardInfo.totalRewardOut += rewardInfo.rewardAmount;
+        }
+        addProfitsToActiveValidatorsByStakePercentExcept(reward);
+
     }
 
-    function setValidators(address[] memory vals) external 
+    function setValidators(address[] memory vals) external
     {
         require(msg.sender == address(validatorContract) || msg.sender == owner(), "Invalid caller");
         for (uint256 i = 0; i < vals.length; i++) {
@@ -612,10 +675,7 @@ contract Staking is Params, Ownership {
     function addProfitsToActiveValidatorsByStakePercentExcept(
         uint256 totalReward
     ) private {
-        if (totalReward == 0) {
-            return;
-        }
-
+        if (totalReward > 0) {
         uint256 totalRewardStake;
         uint256 rewardValsLen;
         (
@@ -623,30 +683,61 @@ contract Staking is Params, Ownership {
             rewardValsLen
         ) = getTotalStakeOfHighestValidatorsExcept();
 
-        if (rewardValsLen == 0) {
-            return;
-        }
-        address[] memory highestValidatorsSet= validatorContract.getTopValidators();
+            if (rewardValsLen > 0) {
+                address[] memory highestValidatorsSet= validatorContract.getTopValidators();
 
-        for (uint256 i = 0; i < highestValidatorsSet.length; i++) {
-            address val = highestValidatorsSet[i];
-             (, uint status, , , , ,) = validatorContract.getValidatorInfo(val);
-            if (
-                status != 5 && validatorInfo[val].coins > 0
-            ) {
-                uint256 reward = totalReward * validatorInfo[val].coins / totalRewardStake;
+                if (totalRewardStake == 0) {
+                    uint256 per = totalReward/rewardValsLen;
+                    uint256 remain = totalReward - (per*rewardValsLen);
+                    address last;
+                    for (uint256 i = 0; i < highestValidatorsSet.length; i++) {
+                        address val = highestValidatorsSet[i];
+                        (, uint status, , , , ,) = validatorContract.getValidatorInfo(val);
+                        if (
+                            status != 5 && validatorInfo[val].coins > 0
+                        ) {
+                            validatorInfo[val].hbIncoming = validatorInfo[val]
+                                .hbIncoming + (per*15/100);
+                            uint256 lastRewardMasterHold = reflectionMasterPerent[val][lastRewardTime[val]];
+                            lastRewardTime[val] = block.timestamp;
 
-                uint256 lastRewardMasterHold = reflectionMasterPerent[val][lastRewardTime[val]];
-                lastRewardTime[val] = block.timestamp;
+                            uint256 unstakedvotercoins = validatorInfo[val].coins - (validatorInfo[val].masterStakerCoins + validatorInfo[val].masterCoins);
+                            if(validatorInfo[val].masterCoins>0){
+                                reflectionMasterPerent[val][lastRewardTime[val]] = lastRewardMasterHold + calculateReflectionPercent(validatorInfo[val].masterCoins, per * 15 / 100);
+                            }
+                            profitPerShare_ += (((per * 70 / 100) * 1e18) / (((validatorInfo[val].masterStakerCoins + validatorInfo[val].masterCoins) * 3) + unstakedvotercoins))  ;
+                            last = val;
+                        }
+                    }
 
-                uint256 unstakedvotercoins = validatorInfo[val].coins - (validatorInfo[val].masterStakerCoins + validatorInfo[val].masterCoins);
-                if(validatorInfo[val].masterCoins>0){
-                    reflectionMasterPerent[val][lastRewardTime[val]] = lastRewardMasterHold + calculateReflectionPercent(validatorInfo[val].masterCoins, reward * 15 / 100);
+                    if (remain > 0 && last != address(0)) {
+                        validatorInfo[last].hbIncoming = validatorInfo[last]
+                            .hbIncoming + remain;
+                    }
                 }
-                profitPerShare_ += (((reward * 85 / 100) * 1e18) / (((validatorInfo[val].masterStakerCoins + validatorInfo[val].masterCoins) * 3) + unstakedvotercoins))  ;
+                else{
+                    for (uint256 i = 0; i < highestValidatorsSet.length; i++) {
+                        address val = highestValidatorsSet[i];
+                        (, uint status, uint256 vcoins, , , ,) = validatorContract.getValidatorInfo(val);
+                        if (
+                            status != 5 && validatorInfo[val].coins > 0
+                        ) {
+                            uint256 reward = totalReward * (validatorInfo[val].coins + vcoins) / totalRewardStake;
+                            validatorInfo[val].hbIncoming = validatorInfo[val]
+                                .hbIncoming + (reward*15/100);
+                            uint256 lastRewardMasterHold = reflectionMasterPerent[val][lastRewardTime[val]];
+                            lastRewardTime[val] = block.timestamp;
+
+                            uint256 unstakedvotercoins = validatorInfo[val].coins - (validatorInfo[val].masterStakerCoins + validatorInfo[val].masterCoins);
+                            if(validatorInfo[val].masterCoins>0){
+                                reflectionMasterPerent[val][lastRewardTime[val]] = lastRewardMasterHold + calculateReflectionPercent(validatorInfo[val].masterCoins, reward * 15 / 100);
+                            }
+                            profitPerShare_ += (((reward * 70 / 100) * 1e18) / (((validatorInfo[val].masterStakerCoins + validatorInfo[val].masterCoins) * 3) + unstakedvotercoins))  ;
+                        }
+
+                    }
+                }
             }
-																																																							  
-			   
         }
     }
 
@@ -656,7 +747,7 @@ contract Staking is Params, Ownership {
         public
         returns(uint256)
     {
-         return (uint256) (((profitPerShare_) * coins)-(payoutsTo_[_user]) / 1e18);
+         return (uint256) (((profitPerShare_) * coins)-(payoutsTo_[_user])) ;
     }
     function getValidatorInfo(address val) public view returns (
             address[] memory, address[] memory
@@ -680,18 +771,19 @@ contract Staking is Params, Ownership {
     {
         address[] memory highestValidatorsSet= validatorContract.getTopValidators();
         for (uint256 i = 0; i < highestValidatorsSet.length; i++) {
-            (, uint status, , , , ,) = validatorContract.getValidatorInfo(highestValidatorsSet[i]);
+            (, uint status, uint256 vcoins, , , ,) = validatorContract.getValidatorInfo(highestValidatorsSet[i]);
             if ( status != 5 ) {
-                total += validatorInfo[highestValidatorsSet[i]].coins;
+                total += vcoins + validatorInfo[highestValidatorsSet[i]].coins;
                 len++;
             }
         }
 
         return (total, len);
     }
-    
-    function emrgencyWithdrawFund() external onlyOwner {      
+
+    function emrgencyWithdrawFund() external onlyOwner {
         payable(msg.sender).transfer(address(this).balance);
     }
-    
+
+    receive() external payable {}
 }
