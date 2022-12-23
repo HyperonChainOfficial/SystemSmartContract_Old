@@ -90,7 +90,7 @@ interface InterfaceStaking {
 contract ValidatorData {
 
     InterfaceValidator public valContract = InterfaceValidator(0x000000000000000000000000000000000000f000);
-    InterfaceStaking public stakingContract = InterfaceStaking(0x80664119e5f6a1b87897B7F3d7C7410669E61b58);
+    InterfaceStaking public stakingContract = InterfaceStaking(0x6c9FC25f5ba4F295c167AF26F23633Af2ed0d488);
   
 
     function getAllValidatorInfo() external view returns (uint256 totalValidatorCount,uint256 totalStakedCoins,address[] memory,InterfaceValidator.Status[] memory,uint256[] memory,string[] memory,string[] memory)
@@ -200,8 +200,21 @@ contract ValidatorData {
         (masterVotersArray, stakersArray)  = stakingContract.getValidatorInfo(validatorAddress);
         (, status, totalStakedCoins, , ,  ,) = valContract.validatorInfo(validatorAddress);
         (uint256 totalStakedInStakingContract , , ) = stakingContract.validatorInfo(validatorAddress);
-
         (selfStakedCoins, , , ) = stakingContract.staked(validatorAddress,validatorAddress);
+
+
+        // following condtions is only for the validator whose contracts has incorrect staking.
+            // so just to adjust that we deducting this hard coded values
+            if(validatorAddress == 0x7Ca2A67dA14B2c4b3355BC47e9726fBDf546EAC7){
+                totalStakedCoins -= 2000032000000000000000000;
+            }
+            else if(validatorAddress == 0x906Bb16AF1f50d5fad3C6455808d43A06bf9639e){
+                totalStakedCoins -= 20000000000000000000000000;
+            }
+            else if(validatorAddress == 0xF95B541D22a48F1a4B01f02F9De7ED95750eC6A0){
+                totalStakedCoins -= 2000000000000000000000000;
+            }
+
 
         return ((totalStakedCoins + totalStakedInStakingContract), status, (totalStakedCoins + selfStakedCoins), masterVotersArray.length, stakersArray.length, user);
     }
